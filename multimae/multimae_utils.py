@@ -156,23 +156,33 @@ class Mlp(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.,):
+    def __init__(self, from_pool_size : int, dim, input_image = 336 ,  num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.,):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
-
+        self.input_image = input_image
+        self.from_pool_size = from_pool_size
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x):
+        self.att_size = self.from_pool_size + (self.input_image // 16 ) ** 2   
+        
+    def forward(self, x, prompt_mask=None):
+        if prompt_mask :  
+            prompt_mask = torch.zeros((self.att_size, self.att_size), dtype=self.dtype, requires_grad=False)
+            prompt_mask[:, :self.from_pool_size] = float("-inf")
+        
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
+        
+        attn = (q @ k.transpose(-2, -1)) * self.scale 
+        
+        if prompt_mask : 
+            attn = attn + prompt_mask[None, None, :, :] 
+        
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
@@ -196,7 +206,7 @@ class CrossAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, context):
+    def forward(self, x, context , prompt_mask = None):
         B, N, C = x.shape
         _, M, _ = context.shape
 
@@ -205,6 +215,10 @@ class CrossAttention(nn.Module):
         k, v = kv[0], kv[1]
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        # 마스킹 적용
+        if prompt_mask is not None:
+            attn = attn.masked_fill(prompt_mask == 0, float('-inf'))
+                
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
