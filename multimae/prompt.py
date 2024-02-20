@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 
 class Prompt(nn.Module):
-    def __init__(self, length=5, embed_dim=768, embedding_key='mean', prompt_init='uniform', prompt_pool=False, 
-                 prompt_key=True, device='cuda' ,pool_size=None, top_k=None, batchwise_prompt=False, prompt_key_init='uniform',):
+    def __init__(self, length=5, embed_dim=768, embedding_key='mean_max', prompt_init='uniform', prompt_pool=False, 
+                 prompt_key=True, device='cuda' ,pool_size=None, top_k=None, batchwise_prompt= True , prompt_key_init='uniform',):
         super().__init__()
 
         self.length = length

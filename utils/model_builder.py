@@ -63,16 +63,10 @@ def create_model(
     prompt_shallow = kwargs.pop('prompt_shallow', None)
     prompt_deep = kwargs.pop('prompt_deep', None)
     prompt_length= kwargs.pop('prompt_length', None)
-    embedding_key= kwargs.pop('embedding_key', None)
-    prompt_init= kwargs.pop('prompt_init', None)
     prompt_pool= kwargs.pop('prompt_pool', None)
-    prompt_key= kwargs.pop('prompt_key', None)
     pool_size= kwargs.pop('pool_size', None)
     top_k= kwargs.pop('top_k', None)
-    batchwise_prompt= kwargs.pop('batchwise_prompt', None)
-    prompt_key_init= kwargs.pop('prompt_key_init', None)
-    head_type= kwargs.pop('head_type', None)
-    use_prompt_mask= kwargs.pop('use_prompt_mask', None)
+
 
     # handle backwards compat with drop_connect -> drop_path change
     drop_connect_rate = kwargs.pop('drop_connect_rate', None)

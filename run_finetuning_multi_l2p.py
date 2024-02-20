@@ -33,6 +33,7 @@ import torch.nn.functional as F
 import yaml
 from einops import rearrange
 
+import random
 import utils
 import utils.data_constants as data_constants
 from multimae import multimae_l2p
@@ -156,7 +157,8 @@ def get_args():
                         help='YAML config file specifying default arguments')
 
     parser = argparse.ArgumentParser('MultiMAE Multitask fine-tuning script', add_help=False)
-    parser.add_argument('--batch_size', default=4, type=int, help='Batch size per GPU')
+    parser.add_argument('--train_batch_size', default=4, type=int, help='Batch size per GPU')
+    parser.add_argument('--test_batch_size', default=4, type=int, help='Batch size per GPU')
     parser.add_argument('--epochs', default=64, type=int)
     parser.add_argument('--save_ckpt_freq', default=20, type=int)
     parser.add_argument('--tmp', default=False, action='store_true')
@@ -184,7 +186,7 @@ def get_args():
                         help='base patch size for image-like modalities')
     parser.add_argument('--input_size', default=512, type=int,
                         help='images input size for backbone')
-    parser.add_argument('--drop_path_encoder', type=float, default=0.0, metavar='PCT',
+    parser.add_argument('--drop_path_encoder', type=float, default=0.2, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
     parser.add_argument('--learnable_pos_emb', action='store_true',
                         help='Makes the positional embedding learnable')
@@ -271,7 +273,7 @@ def get_args():
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
-    parser.add_argument('--seed', default= 800 , type=int)
+    parser.add_argument('--seed', default= 1234 , type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
     parser.add_argument('--auto_resume', action='store_true')
     parser.add_argument('--no_auto_resume', action='store_false', dest='auto_resume')
@@ -292,7 +294,7 @@ def get_args():
     parser.add_argument('--no_dist_eval', action='store_false', dest='dist_eval',
                     help='Disabling distributed evaluation')
     parser.set_defaults(dist_eval=False)
-    parser.add_argument('--num_workers', default=0, type=int)
+    parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem',
@@ -304,7 +306,7 @@ def get_args():
 
     parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--no_fp16', action='store_false', dest='fp16')
-    parser.set_defaults(fp16=False)
+    parser.set_defaults(fp16=True)
 
     # Wandb logging
     parser.add_argument('--log_wandb', default=True, action='store_true',
@@ -336,15 +338,16 @@ def get_args():
     parser.add_argument('--initializer', default='uniform', type=str,)
     parser.add_argument('--prompt_key', default=True, type=bool,)
     parser.add_argument('--prompt_key_init', default='uniform', type=str)
-    parser.add_argument('--use_prompt_mask', default=False, type=bool)
+
     parser.add_argument('--shared_prompt_pool', default=False, type=bool)
     parser.add_argument('--shared_prompt_key', default=False, type=bool)
-    parser.add_argument('--batchwise_prompt', default=True, type=bool)
+    parser.add_argument('--batchwise_prompt', default=False, type=bool)
     parser.add_argument('--embedding_key', default='mean_max', type=str)
     parser.add_argument('--predefined_key', default='', type=str)
     parser.add_argument('--pull_constraint', default=True)
     parser.add_argument('--pull_constraint_coeff', default=0.1, type=float)
     parser.add_argument('--task_specific_prompt_length', default= 100, type=int)
+    parser.add_argument('--use_prompt_mask', default= True, action = 'store_true' )
     
     # when using prompt you should activate shallow or deep
     parser.add_argument('--prompt_mode' , default = None )
@@ -368,17 +371,20 @@ def get_args():
 
     return args
 
+def seed_everything(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)  # type: ignore
+    torch.backends.cudnn.deterministic = True  # type: ignore
+    torch.backends.cudnn.benchmark = True  # type: ignore
 
 def main(args):
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
-    seed = args.seed + utils.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    # random.seed(seed)
-
-    cudnn.benchmark = True
+    seed_everything(args.seed)
+    
 
     if not args.show_user_warnings:
         warnings.filterwarnings("ignore", category=UserWarning)
@@ -428,7 +434,7 @@ def main(args):
 
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
+        batch_size=args.train_batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=True,
@@ -437,7 +443,7 @@ def main(args):
     if dataset_val is not None:
         data_loader_val = torch.utils.data.DataLoader(
             dataset_val, sampler=sampler_val,
-            batch_size=args.batch_size,
+            batch_size=args.test_batch_size,
             num_workers=args.num_workers,
             pin_memory=args.pin_mem,
             drop_last=True
@@ -448,7 +454,7 @@ def main(args):
     if dataset_test is not None:
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test, sampler=sampler_test,
-            batch_size=args.batch_size,
+            batch_size=args.test_batch_size,
             num_workers=args.num_workers,
             pin_memory=args.pin_mem,
             drop_last=False
@@ -506,7 +512,9 @@ def main(args):
         print("Prompt deep mode")
     if not args.prompt_deep and args.prompt_shallow :
         print("Prompt shallow mode")
-        
+    if args.use_prompt_mask : 
+        print("Using prompt mask")
+     
     model = create_model(
         args.model,
         input_adapters ={'rgb': PromptPatchedInputAdapter(num_channels=3,
@@ -516,23 +524,21 @@ def main(args):
         learnable_pos_emb=args.learnable_pos_emb,
         prompt_length=args.length,
         top_k=args.top_k,
-        pool_size=args.size
+        pool_size=args.size, 
         )},
         output_adapters=output_adapters,
         prompt_shallow = args.prompt_shallow,
         prompt_deep = args.prompt_deep,
         drop_path_rate=args.drop_path_encoder,
-        embedding_key=args.embedding_key,
-        prompt_init=args.prompt_key_init,
         prompt_pool=args.prompt_pool,
-        prompt_key=args.prompt_key,
-        batchwise_prompt=args.batchwise_prompt,
-        prompt_key_init=args.prompt_key_init,
-        prompt_length=args.length,
         top_k=args.top_k,
         pool_size=args.size,
-        use_prompt_mask=args.use_prompt_mask,
-        task_specific_prompt_length = args.task_specific_prompt_length
+        prompt_length=args.length,
+        task_specific_prompt_length = args.task_specific_prompt_length,
+        
+
+        use_prompt_mask = args.use_prompt_mask, 
+ 
     )
 
     if args.finetune:
@@ -567,7 +573,7 @@ def main(args):
                 p.requires_grad = False
                 
         for name, param in model.named_parameters():
-            if any(substr in name for substr in ['input_adapters', 'output_adapters', 'bias']):
+            if any(substr in name for substr in ['input_adapter','bias', 'output_adapters']):
                 param.requires_grad = True
 
     # check frozen well 
@@ -595,7 +601,7 @@ def main(args):
     else:
         raise NotImplementedError
     
-    total_batch_size = args.batch_size * utils.get_world_size()
+    total_batch_size = args.train_batch_size * utils.get_world_size()
     num_training_steps_per_epoch = len(dataset_train) // total_batch_size
 
     print("LR = %.8f" % args.lr)
@@ -681,7 +687,7 @@ def main(args):
             log_writer.set_step(epoch)
         log_images = args.log_wandb and args.log_images_wandb and (epoch % args.log_images_freq == 0)
         
-        train_stats = train_one_epoch(
+        train_stats = train_one_epoch( input_size = args.input_size,
             model=model, tasks_loss_fn=tasks_loss_fn,
             criterion=criterion, data_loader=data_loader_train,
             optimizer=optimizer, device=device, epoch=epoch, loss_scaler=loss_scaler,
@@ -789,7 +795,7 @@ def main(args):
                 # f.write(json.dumps(log_stats) + "\n")
 
 
-def train_one_epoch(model: torch.nn.Module, prompt_pool ,top_k,prompt_length ,
+def train_one_epoch(model: torch.nn.Module, input_size , prompt_pool ,top_k,prompt_length ,
  pool_size, prompt_shallow, prompt_deep,tasks_loss_fn: Dict[str, torch.nn.Module], criterion: torch.nn.Module, data_loader: Iterable,
                     optimizer: torch.optim.Optimizer, device: torch.device, epoch: int,
                     loss_scaler, max_norm: float = 1.0, log_writer=None, start_steps=None,
@@ -878,7 +884,7 @@ def train_one_epoch(model: torch.nn.Module, prompt_pool ,top_k,prompt_length ,
             # 뎁스 손실 계산
             depth_loss = 0
             if 'depth' in tasks_dict:
-                depth_loss = tasks_loss_fn['depth'](preds['depth' ].float(), tasks_dict['depth' ], mask_valid=None)
+                depth_loss = tasks_loss_fn['depth'](preds['depth' ].float(), tasks_dict['depth' ].float(), mask_valid=None) 
            
             #for weight 0~1!
             weight_seg = raw_parameter_seg
@@ -898,7 +904,7 @@ def train_one_epoch(model: torch.nn.Module, prompt_pool ,top_k,prompt_length ,
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
 
         trainable_params = [param for param in model.parameters() if param.requires_grad]
-
+        
         grad_norm = loss_scaler(loss, optimizer, clip_grad=max_norm,
                                 parameters=trainable_params, create_graph=is_second_order)
    
@@ -950,17 +956,18 @@ def train_one_epoch(model: torch.nn.Module, prompt_pool ,top_k,prompt_length ,
 
 def compute_loss(seg_loss, depth_loss, weight_seg, weight_depth):
     # σ1과 σ2에 대한 역수를 계산합니다.
-    eps = 1e-2
+    eps = 1e-6
     inv_var_depth = 1 / (weight_depth ** 2 +eps)
     inv_var_seg = 1 / (weight_seg ** 2 + eps)
 
     # 각 손실에 대한 가중치를 적용합니다.
+
     weighted_depth_loss = inv_var_depth * depth_loss
     weighted_seg_loss = inv_var_seg * seg_loss
 
     # 로그 항을 계산합니다.
     log_term = torch.log(weight_depth**2 + eps) + torch.log(weight_seg**2 + eps)
-
+    
     # 최종 손실을 계산합니다.
     total_loss = weighted_depth_loss + weighted_seg_loss + log_term
 
@@ -1014,7 +1021,8 @@ def evaluate_seg(model, criterion, data_loader, device, epoch, in_domains, num_c
         with torch.cuda.amp.autocast(enabled=fp16):
             preds = model(input_dict, return_all_layers=return_all_layers)
             seg_pred, seg_gt = preds['semseg'], tasks_dict['semseg']
-            loss = criterion(seg_pred, seg_gt)
+            loss = criterion(seg_pred, seg_gt) 
+            
 
         loss_value = loss.item()
         # If there is void, exclude it from the preds and take second highest class
@@ -1115,7 +1123,7 @@ def evaluate_depth(model, tasks_loss_fn, data_loader, device, epoch, in_domains,
         with torch.cuda.amp.autocast(enabled=False):
             preds = model(input_dict, return_all_layers=return_all_layers)
             task_loss =  tasks_loss_fn['depth'](preds['depth' ].float(), tasks_dict['depth' ], mask_valid=None)
-            loss = task_loss.item()
+            loss = task_loss.item() 
 
         loss_value = loss
         metrics = masked_nyu_metrics(preds['depth'], tasks_dict['depth'], mask_valid=None)
@@ -1191,7 +1199,7 @@ def evaluate_both(model, criterion, tasks_loss_fn, data_loader, device, epoch, i
 
             # Calculate losses
             seg_loss = criterion(seg_pred, seg_gt)
-            depth_loss = tasks_loss_fn['depth'](depth_pred.float(), depth_gt, mask_valid=None)
+            depth_loss = tasks_loss_fn['depth'](depth_pred.float(), depth_gt, mask_valid=None) 
 
         # 세그먼테이션 결과 업데이트
         seg_pred_argmax = seg_pred[:, :num_classes].argmax(dim=1)
